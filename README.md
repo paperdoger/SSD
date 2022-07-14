@@ -45,3 +45,15 @@ f2fs的最小单位是block，往上的是segment，再往上是section，最高
 do_garbage_collect函数是gc流程的主要操作，作用是根据入参的段号segno找到对应的segment，然后将整个segment读取出来，通过异地更新的方式写入迁移到其他segment中。这样操作以后，被gc的segment会变为一个全新的segment进而可以被系统重新使用。
 
 F2FS通过f2fs_summary_block结构，根据物理地址找到对应的inode，每一个segment都对应一个f2fs_summary_block结构。segment中每一个block都对应了f2fs_summary_block结构中的一个entry，记录了这个block地址属于哪个node(通过node id)以及属于这个node的第几个block。
+
+
+
+# 7/14
+通过阅读F2FS GC数据迁移部分源码，明白了数据迁移以及建立inode list去管理被迁移segment中valid block的详细过程。
+第一阶段(phase=0): 根据entry记录的nid，通过ra_node_page函数可以将这个nid对应的node page读入到内存当中。
+
+第二阶段(phase=1): 根据start_addr以及entry，通过check_dnode函数，找到了对应的struct node_info *dni，它记录这个block是属于哪一个inode(inode no)，然后将对应的inode page读入到内存当中。
+
+第三阶段(phase=2): 首先通过entry->ofs_in_node获取到当前block属于node的第几个block，然后通过start_bidx_of_node函数获取到当前block是属于从inode page开始的第几个block，其实本质上就是start_bidx + ofs_in_node = page->index的值。然后根据page->index找到对应的data page，读入到内存中以便后续使用。最后就是将该inode加入到上面提及过的inode list中。
+
+第三阶段(phase=3): 从inode list中取出一个inode，然后根据start_bidx + ofs_in_node找到对应的page->index，然后通过move_data_page函数，将数据写入到其他segment中。
