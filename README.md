@@ -57,3 +57,9 @@ F2FS通过f2fs_summary_block结构，根据物理地址找到对应的inode，�
 第三阶段(phase=2): 首先通过entry->ofs_in_node获取到当前block属于node的第几个block，然后通过start_bidx_of_node函数获取到当前block是属于从inode page开始的第几个block，其实本质上就是start_bidx + ofs_in_node = page->index的值。然后根据page->index找到对应的data page，读入到内存中以便后续使用。最后就是将该inode加入到上面提及过的inode list中。
 
 第三阶段(phase=3): 从inode list中取出一个inode，然后根据start_bidx + ofs_in_node找到对应的page->index，然后通过move_data_page函数，将数据写入到其他segment中。
+
+
+
+
+# 7/15 
+了解了f2fs_summary的作用以及冷热分离的识别机制。分析工作集算法扩展至冷热分离中可能存在的问题。
