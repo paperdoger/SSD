@@ -84,3 +84,82 @@ F2FS的写流程主要包含了以下几个子流程:
 调用f2fs_write_data_pages函数: 系统writeback或者fsync触发的时候执行这个函数写入到磁盘
 
 并分析了改变冷热分离策略可能带来的依赖影响。
+
+
+# 7/20
+F2FS工具的准备
+主要使用到用于格式化的mkfs.f2fs工具，ubuntu下可以执行以下命令进行安装
+sudo apt-get install f2fs-tools
+编译可运行F2FS的内核
+经过上述步骤的编译，会在Linux的根目录生成一个.config文件，打开这个文件，找到以下的内核选项，并设置为y。
+CONFIG_F2FS_FS=y
+CONFIG_F2FS_STAT_FS=y
+CONFIG_F2FS_FS_XATTR=y
+CONFIG_F2FS_FS_POSIX_ACL=y
+然后重新编译
+$ make bzImage –j4 ARCH=arm CROSS_COMPILE=arm-linux-gnueabi-
+$ make dtbs
+编译结束后，创建一个文件作为F2FS的磁盘空间
+dd if=/dev/zero of=a9rootfs.f2fs bs=1M count=250 # 创建250MB的F2FS空间
+mkfs.f2fs a9rootfs.f2fs #使用F2FS格式化工具进行格式化
+接下来，通过执行如下命令启动Qemu虚拟机，需要使用-sd选项将刚刚创建的作为F2FS磁盘空间的文件挂载到系统中:
+qemu-system-arm  \
+        -M vexpress-a9 \
+        -m 512M \
+        -kernel /home/xxx/kernels/linux4/linux-4.18/arch/arm/boot/zImage \
+        -dtb /home/xxx/kernels/linux4/linux-4.18/arch/arm/boot/dts/vexpress-v2p-ca9.dtb \
+        -nographic \
+        -append "rdinit=/linuxrc console=ttyAMA0 loglevel=8" \
+        -sd a9rootfs.f2fs
+最后，Qemu完成启动之后，在Qemu的linux系统执行如下命令将F2FS挂载到linux中:
+mount -t f2fs /dev/mmcblk0 /mnt/ -o loop
+然后就可以在/mnt目录下通过F2FS对文件进行操作和测试。
+
+# 7/21
+F2FS有两种选择segment进行计算cost的算法，分别是Greedy算法和Cost-Benefit算法。
+static inline unsigned int get_gc_cost(struct f2fs_sb_info *sbi,
+			unsigned int segno, struct victim_sel_policy *p)
+{
+	if (p->alloc_mode == SSR)
+		return get_seg_entry(sbi, segno)->ckpt_valid_blocks;
+
+	/* alloc_mode == LFS */
+	if (p->gc_mode == GC_GREEDY)
+		return get_valid_blocks(sbi, segno, sbi->segs_per_sec); // Greedy算法，valid block越多表示cost越大，越不值得gc
+	else
+		return get_cb_cost(sbi, segno); // Cost-Benefit算法，这个是考虑了访问时间和valid block开销的算法
+}
+
+我们可以将Cost-Benefit算法理解为一个平衡invalid block数目以及修改时间的的一个算法，在f2fs的实现如下:
+static unsigned int get_cb_cost(struct f2fs_sb_info *sbi, unsigned int segno)
+{
+	struct sit_info *sit_i = SIT_I(sbi);
+	unsigned int secno = GET_SECNO(sbi, segno);
+	unsigned int start = secno * sbi->segs_per_sec;
+	unsigned long long mtime = 0;
+	unsigned int vblocks;
+	unsigned char age = 0;
+	unsigned char u;
+	unsigned int i;
+
+	for (i = 0; i < sbi->segs_per_sec; i++)
+		mtime += get_seg_entry(sbi, start + i)->mtime; // 计算section里面的每一个segment最近一次访问时间
+	vblocks = get_valid_blocks(sbi, segno, sbi->segs_per_sec); // 获取当前的section有多少个valid block
+
+	mtime = div_u64(mtime, sbi->segs_per_sec); // 计算平均每一segment的最近一次访问时间
+	vblocks = div_u64(vblocks, sbi->segs_per_sec); // 计算平均每一个segment的valid block个数
+
+	u = (vblocks * 100) >> sbi->log_blocks_per_seg; // 百分比计算所以乘以100，然后计算得到了valid block的比例
+
+	/* sit_i->min_mtime以及sit_i->max_mtime计算的是每一次gc的时候的最小最大的修改时间，因此通过这个比例计算这个section的修改时间在总体的情况下的表现 */
+	if (mtime < sit_i->min_mtime)
+		sit_i->min_mtime = mtime;
+	if (mtime > sit_i->max_mtime)
+		sit_i->max_mtime = mtime;
+	if (sit_i->max_mtime != sit_i->min_mtime)
+		age = 100 - div64_u64(100 * (mtime - sit_i->min_mtime),
+				sit_i->max_mtime - sit_i->min_mtime);
+
+	return UINT_MAX - ((100 * (100 - u) * age) / (100 + u));
+}
+在计算平均每一segment的最近一次访问时间和计算平均每一个segment的valid block个数的基础上，我们根据每一个segment中block的平均访问次数。
