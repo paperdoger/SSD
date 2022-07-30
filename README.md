@@ -163,3 +163,6 @@ static unsigned int get_cb_cost(struct f2fs_sb_info *sbi, unsigned int segno)
 	return UINT_MAX - ((100 * (100 - u) * age) / (100 + u));
 }
 在计算平均每一segment的最近一次访问时间和计算平均每一个segment的valid block个数的基础上，我们根据每一个segment中block的平均访问次数。
+
+#7/29
+选择segment以及其R位的定义与设计部分已完成，读写部分尚未完成。
